@@ -1,0 +1,28 @@
+[package]
+name = "openocd-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform GUI for OpenOCD, inspired by STM32 ST-Link Utility"
+
+[lib]
+name = "openocd_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+openocd-core = { path = "crates/openocd-core" }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[workspace]
+members = ["crates/openocd-core"]

@@ -1,0 +1,13 @@
+[package]
+name = "openocd-core"
+version = "0.1.0"
+edition = "2021"
+description = "OpenOCD driver core: process management, telnet protocol, command parsing"
+
+[dependencies]
+tokio = { version = "1", features = ["process", "net", "io-util", "sync", "time", "rt", "macros"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
