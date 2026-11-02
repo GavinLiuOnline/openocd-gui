@@ -7,22 +7,36 @@ const CUSTOM = "__custom__";
 export function SettingsPanel() {
   const { t, settings, patchSettings, api, actions } = useApp();
   const [lists, setLists] = useState<ScriptLists | null>(null);
+  const [listVersion, setListVersion] = useState(0);
+  const [customIface, setCustomIface] = useState(false);
+  const [customTarget, setCustomTarget] = useState(false);
 
-  const refresh = () => {
-    api?.listScripts(settings.binary).then(setLists).catch(() => setLists(null));
-  };
+  const refresh = () => setListVersion((n) => n + 1);
 
-  useEffect(refresh, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // `api` resolves asynchronously after mount, so the list must be (re)loaded once it exists.
+  useEffect(() => {
+    if (!api) return;
+    let disposed = false;
+    api
+      .listScripts(settings.binary)
+      .then((l) => !disposed && setLists(l))
+      .catch(() => !disposed && setLists(null));
+    return () => {
+      disposed = true;
+    };
+  }, [api, listVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ifaceOptions = lists?.interfaces ?? [];
   const targetOptions = lists?.targets ?? [];
-  const ifaceCustom = settings.interfaceCfg !== "" && !ifaceOptions.some((o) => o.path === settings.interfaceCfg);
-  const targetCustom = settings.targetCfg !== "" && !targetOptions.some((o) => o.path === settings.targetCfg);
+  const notInList = (options: { path: string }[], value: string) => value !== "" && !options.some((o) => o.path === value);
+  const ifaceCustom = customIface || notInList(ifaceOptions, settings.interfaceCfg);
+  const targetCustom = customTarget || notInList(targetOptions, settings.targetCfg);
 
   const cfgSelect = (
     which: "interfaceCfg" | "targetCfg",
     options: { name: string; path: string }[],
     isCustom: boolean,
+    setCustom: (v: boolean) => void,
   ) => {
     const value = settings[which];
     return (
@@ -30,6 +44,7 @@ export function SettingsPanel() {
         value={isCustom ? CUSTOM : value}
         onChange={(e) => {
           const v = e.target.value;
+          setCustom(v === CUSTOM);
           patchSettings({ [which]: v === CUSTOM ? "" : v } as never);
         }}
       >
@@ -41,6 +56,32 @@ export function SettingsPanel() {
         ))}
         <option value={CUSTOM}>{t("settings.custom")}</option>
       </select>
+    );
+  };
+
+  const customField = (which: "interfaceCfg" | "targetCfg", placeholder: string) => {
+    const value = settings[which];
+    const warn =
+      value === ""
+        ? t("settings.customEmpty")
+        : !value.includes("/") && !value.includes("\\")
+          ? t("settings.customPathHint")
+          : null;
+    return (
+      <>
+        <input
+          type="text"
+          style={{ marginTop: 6 }}
+          value={value}
+          onChange={(e) => patchSettings({ [which]: e.target.value } as never)}
+          placeholder={placeholder}
+        />
+        {warn && (
+          <div className="hint" style={{ color: "var(--warn)" }}>
+            {warn}
+          </div>
+        )}
+      </>
     );
   };
 
@@ -76,30 +117,19 @@ export function SettingsPanel() {
 
       <div className="field">
         <label>{t("settings.interface")}</label>
-        {cfgSelect("interfaceCfg", ifaceOptions, ifaceCustom)}
-        {ifaceCustom && (
-          <input
-            type="text"
-            style={{ marginTop: 6 }}
-            value={settings.interfaceCfg}
-            onChange={(e) => patchSettings({ interfaceCfg: e.target.value })}
-            placeholder="stlink.cfg"
-          />
+        {cfgSelect("interfaceCfg", ifaceOptions, ifaceCustom, setCustomIface)}
+        {ifaceCustom && customField("interfaceCfg", "interface/stlink.cfg")}
+        {settings.interfaceCfg === "" && (
+          <div className="hint" style={{ color: "var(--warn)" }}>
+            {t("settings.interfaceRequired")}
+          </div>
         )}
       </div>
 
       <div className="field">
         <label>{t("settings.target")}</label>
-        {cfgSelect("targetCfg", targetOptions, targetCustom)}
-        {targetCustom && (
-          <input
-            type="text"
-            style={{ marginTop: 6 }}
-            value={settings.targetCfg}
-            onChange={(e) => patchSettings({ targetCfg: e.target.value })}
-            placeholder="stm32f1x.cfg"
-          />
-        )}
+        {cfgSelect("targetCfg", targetOptions, targetCustom, setCustomTarget)}
+        {targetCustom && customField("targetCfg", "target/stm32f1x.cfg")}
       </div>
 
       <div className="field">

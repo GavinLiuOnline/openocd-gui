@@ -9,7 +9,10 @@ pub mod process;
 pub mod scripts;
 pub mod telnet;
 
-pub use command::{parse_flash_banks, parse_mdw, parse_targets, FlashBank, Session, StartConfig, TargetInfo, TargetState};
+pub use command::{
+    parse_flash_banks, parse_mdw, parse_targets, flash_size_kb, FlashBank, ProbeOutcome, Session,
+    StartConfig, TargetInfo, TargetState,
+};
 
 /// One captured log line from the openocd process.
 #[derive(Debug, Clone, serde::Serialize)]

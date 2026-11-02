@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "openocd-gui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "io.github.openocd-gui",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -26,12 +26,26 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "openocd-gui",
+    "shortDescription": "Cross-platform GUI for OpenOCD, inspired by STM32 ST-Link Utility",
+    "longDescription": "Graphical front-end that drives an OpenOCD session over its telnet command server: attach to a debug probe, inspect targets and flash banks, program/verify hex, bin and elf images, read/write memory and registers, and run GDB-based debugging on ARM Cortex-M targets.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "section": "devel",
+        "depends": ["udev"],
+        "files": {
+          "/etc/udev/rules.d/69-openocd-gui.rules": "packaging/linux/69-openocd-gui.rules"
+        },
+        "postInstallScript": "packaging/linux/postinst",
+        "postRemoveScript": "packaging/linux/postrm"
+      }
+    }
   }
 }

@@ -7,7 +7,7 @@ function StatePill({ state }: { state: string }) {
 }
 
 export function InfoPanel() {
-  const { t, conn, targetInfo, settings, actions } = useApp();
+  const { t, conn, busy, targetInfo, settings, actions } = useApp();
 
   if (conn !== "connected" || !targetInfo) {
     return <div className="empty-note">{t("info.notConnected")}</div>;
@@ -67,8 +67,11 @@ export function InfoPanel() {
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0 8px" }}>
         <div className="section-title" style={{ margin: 0 }}>{t("info.flashBanks")}</div>
-        <button className="tb-btn" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => actions.refreshInfo()}>
+        <button className="tb-btn" style={{ padding: "3px 10px", fontSize: 12 }} disabled={busy !== null} onClick={() => actions.refreshInfo()}>
           {t("info.refresh")}
+        </button>
+        <button className="tb-btn" style={{ padding: "3px 10px", fontSize: 12 }} disabled={busy !== null} onClick={() => void actions.probeSizes()}>
+          {t("info.probeSizes")}
         </button>
       </div>
 
@@ -90,11 +93,28 @@ export function InfoPanel() {
               <td>{b.index}</td>
               <td className="mono">{b.name}</td>
               <td className="mono">{fmtHex(b.base)}</td>
-              <td className="mono">{fmtHex(b.size)} ({fmtSize(b.size)})</td>
+              <td className="mono">
+                {b.size === 0 ? (
+                  <span style={{ color: "var(--danger)" }}>{t("info.sizeUnknown")}</span>
+                ) : (
+                  <>
+                    {fmtHex(b.size)} ({fmtSize(b.size)})
+                    {b.inferred && (
+                      <span style={{ color: "var(--warn)", marginLeft: 6, fontSize: 12 }}>· {t("info.inferred")}</span>
+                    )}
+                  </>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+
+      {targetInfo.flash_banks.some((b) => b.size === 0) && (
+        <div className="hint" style={{ color: "var(--warn)", marginTop: 6 }}>
+          {t("info.sizeZeroHint")}
+        </div>
+      )}
     </div>
   );
 }

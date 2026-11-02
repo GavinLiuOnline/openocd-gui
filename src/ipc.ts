@@ -26,12 +26,19 @@ export interface FlashBank {
   name: string;
   base: number;
   size: number;
+  /** size came from the FLASH_SIZE option byte, not a successful bank probe */
+  inferred?: boolean;
 }
 
 export interface TargetInfo {
   version: string;
   targets: TargetState[];
   flash_banks: FlashBank[];
+}
+
+export interface ProbeOutcome {
+  info: TargetInfo;
+  report: string;
 }
 
 export interface CfgEntry {
@@ -66,11 +73,14 @@ export interface Adapter {
   program(path: string, offset: number, erase: boolean, verify: boolean, reset: boolean): Promise<string>;
   verify(path: string, offset: number): Promise<string>;
   eraseAll(): Promise<string>;
+  dumpMemory(path: string, addr: number, size: number): Promise<string>;
+  probeSizes(): Promise<ProbeOutcome>;
   reset(mode: string): Promise<void>;
   halt(): Promise<void>;
   resume(): Promise<void>;
   raw(cmd: string): Promise<string>;
   pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
+  saveFile(defaultPath?: string): Promise<string | null>;
   onLog(cb: (l: LogLine) => void): () => void;
   onExit(cb: (code: number | null) => void): () => void;
 }
@@ -97,10 +107,20 @@ async function createTauriAdapter(): Promise<Adapter> {
       invoke("flash_program", { path, offset, erase, verify, reset }),
     verify: (path, offset) => invoke("flash_verify", { path, offset }),
     eraseAll: () => invoke("flash_erase_all"),
+    dumpMemory: (path, addr, size) => invoke("dump_memory_bin", { path, addr, size }),
+    probeSizes: () => invoke("flash_probe_sizes"),
     reset: (mode) => invoke("reset_target", { mode }),
     halt: () => invoke("halt_target"),
     resume: () => invoke("resume_target"),
     raw: (cmd) => invoke("raw_command", { cmd }),
+    saveFile: async (defaultPath) => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const result = await save({
+        defaultPath,
+        filters: [{ name: "Binary", extensions: ["bin"] }],
+      });
+      return typeof result === "string" ? result : null;
+    },
     pickFile: async (filters) => {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const result = await open({
@@ -233,6 +253,25 @@ function createMockAdapter(): Adapter {
       emit("Info : erase check finished");
       return "erase done";
     },
+    async dumpMemory(path, addr, size) {
+      errIfDisconnected();
+      emit("Info : halted target");
+      emit(`Debug: dump_image "${path}" 0x${addr.toString(16)} ${size}`);
+      await sleep(Math.min(2500, 300 + size / 40));
+      emit(`Info : wrote ${size} bytes`);
+      return `halted target\nwrote ${size} bytes\n已保存 ${size} 字节 → ${path}`;
+    },
+    async probeSizes() {
+      errIfDisconnected();
+      emit("Info : flash probe 0");
+      await sleep(400);
+      emit("device id = 0x10006444 flash size = 32kbytes");
+      const bank = { ...MOCK_INFO.flash_banks[0], size: 0x8000, inferred: true };
+      return {
+        info: { ...MOCK_INFO, flash_banks: [bank] },
+        report: "target was running -> halted for probing / bank probe still failed; FLASH_SIZE (STM32F0/F1/F3 @ 0x1ffff7cc) = 32 KB used instead",
+      };
+    },
     async reset(mode) {
       errIfDisconnected();
       emit(`Info : reset ${mode}`);
@@ -262,6 +301,10 @@ function createMockAdapter(): Adapter {
     async pickFile() {
       await sleep(150);
       return "/home/user/project/build/firmware.hex";
+    },
+    async saveFile(defaultPath) {
+      await sleep(150);
+      return defaultPath || "/home/user/Downloads/flash_dump.bin";
     },
     onLog(cb) {
       logCbs.add(cb);

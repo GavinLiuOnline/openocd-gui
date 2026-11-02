@@ -12,6 +12,15 @@ use crate::LogLine;
 const Q: Duration = Duration::from_secs(5);
 const SHORT: Duration = Duration::from_secs(15);
 const LONG: Duration = Duration::from_secs(300);
+/// Whole-chip reads over a 1 MHz jumper-wired ST-Link take minutes, not seconds.
+const DUMP: Duration = Duration::from_secs(1800);
+
+/// STM32 FLASH_SIZE option byte: the low 16 bits hold the capacity in KB. Only
+/// used as a fallback when the flash bank driver failed to report a size.
+const FLASH_SIZE_REGS: &[(u64, &str)] = &[
+    (0x1FFF_F7CC, "STM32F0/F1/F3"),
+    (0x1FFF_7A22, "STM32F2/F4/F7/L/L+"),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -47,6 +56,17 @@ pub struct FlashBank {
     pub name: String,
     pub base: u64,
     pub size: u64,
+    /// Size recovered from the FLASH_SIZE option byte rather than from a
+    /// successful bank probe; OpenOCD itself still does not know the geometry.
+    #[serde(default)]
+    pub inferred: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProbeOutcome {
+    pub info: TargetInfo,
+    pub report: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +209,104 @@ impl Session {
         Ok(TargetInfo { version, targets, flash_banks })
     }
 
+    /// Recover the flash capacity for banks `flash banks` reports as size 0.
+    ///
+    /// OpenOCD only sets `size` when the driver's `probe` runs, and a target cfg
+    /// whose `examine-end` event script fails (wrong DBGMCU base for the actual
+    /// part, or a flaky SWD link) leaves the bank unprobed. An explicit
+    /// `flash probe` normally fixes it; the FLASH_SIZE option byte is the
+    /// fallback so the UI can still offer a usable size.
+    pub async fn probe_flash_sizes(&self) -> Result<ProbeOutcome, SessionError> {
+        let mut report = String::new();
+        let targets = self.current_targets().await?;
+        if targets.iter().any(|t| t.current && t.state != "halted") {
+            report.push_str("target was running -> halting for probing\n");
+            // Carry on regardless: if `flash probe` then fails, its own error text
+            // is far more useful than an early bail-out from here.
+            if let Err(e) = self.halt().await {
+                report.push_str(&format!("halt failed: {e}\n"));
+            }
+        }
+
+        let mut banks = self.current_banks().await?;
+        for idx in banks.iter().filter(|b| b.size == 0).map(|b| b.index).collect::<Vec<_>>() {
+            let r = self.exec(&format!("flash probe {idx}"), LONG).await?;
+            report.push_str(&format!("flash probe {idx}: {}\n", r.replace('\n', " / ")));
+        }
+        banks = self.current_banks().await?;
+
+        if banks.iter().any(|b| b.size == 0) {
+            match self.read_flash_size_option_byte().await {
+                Some((kb, reg, family)) => {
+                    for b in banks.iter_mut().filter(|b| b.size == 0) {
+                        b.size = kb * 1024;
+                        b.inferred = true;
+                    }
+                    report.push_str(&format!(
+                        "bank probe still failed; FLASH_SIZE ({family} @ 0x{reg:x}) = {kb} KB used instead\n"
+                    ));
+                }
+                None => report.push_str(
+                    "FLASH_SIZE option byte unreadable: check the SWD link and that the target cfg matches the part\n",
+                ),
+            }
+        }
+
+        let targets = self.current_targets().await?;
+        let version = self.version().await?;
+        Ok(ProbeOutcome { info: TargetInfo { version, targets, flash_banks: banks }, report })
+    }
+
+    async fn current_targets(&self) -> Result<Vec<TargetState>, SessionError> {
+        let raw = self.exec("targets", Q).await?;
+        parse_targets(&raw).map_err(SessionError::Msg)
+    }
+
+    async fn current_banks(&self) -> Result<Vec<FlashBank>, SessionError> {
+        let raw = self.exec("flash banks", Q).await?;
+        parse_flash_banks(&raw).map_err(SessionError::Msg)
+    }
+
+    /// `(kilobytes, register, family)` from the first FLASH_SIZE option byte that
+    /// reads back a plausible capacity.
+    async fn read_flash_size_option_byte(&self) -> Option<(u64, u64, &'static str)> {
+        for &(reg, family) in FLASH_SIZE_REGS {
+            let Ok(words) = self.read_words(reg, 1).await else { continue };
+            let Some(kb) = words.first().and_then(|w| flash_size_kb(*w)) else { continue };
+            return Some((kb, reg, family));
+        }
+        None
+    }
+
+    /// Dump `size` bytes of the target's memory map into a binary file. OpenOCD
+    /// writes the file itself (`dump_image`), so the data never crosses the
+    /// telnet socket or the IPC boundary.
+    pub async fn dump_memory_bin(&self, path: &str, base: u64, size: u64) -> Result<String, SessionError> {
+        if size == 0 {
+            return Err(SessionError::Msg("size must be > 0".into()));
+        }
+        let mut report = String::new();
+        // Reading a live core's bus gives torn results, and on an STM32 that has
+        // entered Sleep the clock is gated, so park the target first.
+        match self.halt().await {
+            Ok(()) => report.push_str("halted target\n"),
+            Err(e) => report.push_str(&format!("halt did not succeed, reading anyway: {e}\n")),
+        }
+        // `dump_image` reads 32-bit words; round up so nothing is silently lost.
+        let rounded = size.div_ceil(4) * 4;
+        if rounded != size {
+            report.push_str(&format!("size rounded up to {rounded} bytes (word access)\n"));
+        }
+        let r = self
+            .exec(&format!("dump_image \"{path}\" 0x{base:x} {rounded}"), DUMP)
+            .await?;
+        if has_error(&r) {
+            return Err(SessionError::Msg(format!("dump_image: {r}")));
+        }
+        report.push_str(&r);
+        Ok(report)
+    }
+
     /// Read `count` 32-bit words starting at `addr` (little-endian byte order
     /// on the target is the caller's concern; words are returned as-is).
     pub async fn read_words(&self, addr: u64, count: u32) -> Result<Vec<u32>, SessionError> {
@@ -243,7 +361,11 @@ impl Session {
         }
 
         self.exec("reset halt", Q).await?;
-        let r = self.exec(&format!("flash write_image {quoted}{offset_arg}"), LONG).await?;
+        // `erase` keyword makes OpenOCD erase exactly the sectors the image covers;
+        // without it a write onto non-blank cells fails with "not erased before writing".
+        let r = self
+            .exec(&format!("flash write_image erase {quoted}{offset_arg}"), LONG)
+            .await?;
         if has_error(&r) {
             return Err(SessionError::Msg(format!("write_image: {r}")));
         }
@@ -366,6 +488,15 @@ pub fn parse_mdw(text: &str) -> Result<Vec<u32>, String> {
     Ok(words)
 }
 
+/// Kilobytes from a FLASH_SIZE option-byte word, rejecting the all-ones /
+/// all-zeros a bus fault or a sleeping chip returns.
+pub fn flash_size_kb(word: u32) -> Option<u64> {
+    match (word & 0xFFFF) as u64 {
+        kb @ 1..=2048 => Some(kb),
+        _ => None,
+    }
+}
+
 /// Parse `targets` output (openocd 0.10+, format verified against 0.12):
 ///
 /// ```text
@@ -436,7 +567,7 @@ pub fn parse_flash_banks(text: &str) -> Result<Vec<FlashBank>, String> {
             .and_then(|s| s.split(',').next())
             .and_then(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
             .unwrap_or(0);
-        out.push(FlashBank { index, name, base, size });
+        out.push(FlashBank { index, name, base, size, inferred: false });
     }
     Ok(out)
 }
@@ -505,5 +636,29 @@ mod tests {
         assert_eq!(b[0].name, "stm32f1x.flash");
         assert_eq!(b[0].base, 0x08000000);
         assert_eq!(b[0].size, 0x10000);
+        assert!(!b[0].inferred);
+    }
+
+    #[test]
+    fn flash_banks_unprobed_size_is_zero() {
+        // Observed shape on the bench: driver name in parentheses, size still 0
+        // because examine-end failed before the bank was probed.
+        let t = "#0 : stm32f0x.flash (stm32f1x) at 0x08000000, size 0x00000000, buswidth 0, chipwidth 0";
+        let b = parse_flash_banks(t).unwrap();
+        assert_eq!(b[0].size, 0);
+    }
+
+    #[test]
+    fn flash_size_kb_accepts_real_capacities() {
+        assert_eq!(flash_size_kb(0x0000_0020), Some(32)); // the bench part reports 32 KB
+        assert_eq!(flash_size_kb(0x1234_0100), Some(256));
+        assert_eq!(flash_size_kb(0x0000_0800), Some(2048)); // largest shipping STM32 flash
+    }
+
+    #[test]
+    fn flash_size_kb_rejects_bus_fault_reads() {
+        assert_eq!(flash_size_kb(0xFFFF_FFFF), None);
+        assert_eq!(flash_size_kb(0), None);
+        assert_eq!(flash_size_kb(0x0001_0000), None); // nothing ships with 64 MB of flash
     }
 }

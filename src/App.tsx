@@ -108,6 +108,10 @@ function AppInner() {
   const connect = useCallback(async () => {
     const api = apiRef.current;
     if (!api || conn !== "disconnected") return;
+    if (!settings.interfaceCfg.trim()) {
+      showToast(t("settings.interfaceRequired"));
+      return;
+    }
     setConn("connecting");
     setLogs([]);
     try {
@@ -118,7 +122,7 @@ function AppInner() {
       setConn("disconnected");
       showToast(String(e));
     }
-  }, [conn, buildCfg, showToast]);
+  }, [conn, buildCfg, settings.interfaceCfg, showToast, t]);
 
   const disconnect = useCallback(async () => {
     const api = apiRef.current;
@@ -158,11 +162,29 @@ function AppInner() {
     }
   }, [showToast]);
 
+  // Deliberately not routed through runOp: its post-op api.info() would drop the
+  // inferred size the probe just recovered.
+  const probeSizes = useCallback(async () => {
+    const api = apiRef.current;
+    if (!api || conn !== "connected") return;
+    setBusy(t("info.probeSizes"));
+    try {
+      const out = await api.probeSizes();
+      setTargetInfo(out.info);
+      showToast(out.report);
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [conn, showToast, t]);
+
   const actions = useMemo(
     () => ({
       connect,
       disconnect,
       refreshInfo,
+      probeSizes,
       reset: (mode: string) => runOp(t("toolbar.resetRun"), () => apiRef.current!.reset(mode)),
       halt: () => runOp(t("toolbar.halt"), () => apiRef.current!.halt()),
       resume: () => runOp(t("toolbar.resume"), () => apiRef.current!.resume()),
@@ -170,7 +192,7 @@ function AppInner() {
       clearLogs: () => setLogs([]),
       pushLog,
     }),
-    [connect, disconnect, refreshInfo, runOp, t, pushLog],
+    [connect, disconnect, refreshInfo, probeSizes, runOp, t, pushLog],
   );
 
   const ctx: AppCtx = {
@@ -218,7 +240,12 @@ function AppInner() {
 
         <div className="toolbar">
           {!connected && (
-            <button className="tb-btn primary" disabled={conn === "connecting" || busy !== null} onClick={() => void connect()}>
+            <button
+              className="tb-btn primary"
+              disabled={conn === "connecting" || busy !== null}
+              title={settings.interfaceCfg.trim() ? undefined : t("settings.interfaceRequired")}
+              onClick={() => void connect()}
+            >
               {conn === "connecting" && <span className="tb-spin" />}
               {conn === "connecting" ? t("toolbar.connecting") : `▶ ${t("toolbar.connect")}`}
             </button>

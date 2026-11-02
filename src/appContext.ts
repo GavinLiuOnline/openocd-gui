@@ -47,6 +47,7 @@ export interface AppCtx {
     connect: () => Promise<void>;
     disconnect: () => Promise<void>;
     refreshInfo: () => Promise<void>;
+    probeSizes: () => Promise<void>;
     reset: (mode: string) => Promise<void>;
     halt: () => Promise<void>;
     resume: () => Promise<void>;

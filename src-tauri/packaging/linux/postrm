@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs as root after removal/purge so the rules we installed stop applying.
+
+set -e
+
+case "$1" in
+	remove | purge | upgrade | disappear | failed-upgrade | abort-install | abort-upgrade)
+		if command -v udevadm >/dev/null 2>&1; then
+			udevadm control --reload-rules || true
+			udevadm trigger --subsystem-match=usb --action=change || true
+		fi
+		;;
+esac
+
+exit 0

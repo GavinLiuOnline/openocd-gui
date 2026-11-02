@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs as root after the package is unpacked.
+
+set -e
+
+if command -v udevadm >/dev/null 2>&1; then
+	udevadm control --reload-rules || true
+	udevadm trigger --subsystem-match=usb --action=change || true
+fi
+
+# TAG+="uaccess" covers the logged-in desktop session; command-line or headless
+# access relies on group membership, which this script deliberately does not change.
+if [ -n "$SUDO_USER" ] && ! id -nG "$SUDO_USER" 2>/dev/null | grep -qw plugdev; then
+	echo "openocd-gui: $SUDO_USER is not in group plugdev; run 'sudo usermod -aG plugdev $SUDO_USER' and log out/in." >&2
+fi
+
+exit 0
